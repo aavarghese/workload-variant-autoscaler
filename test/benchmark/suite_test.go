@@ -21,6 +21,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	fmav1alpha1 "github.com/llm-d-incubation/llm-d-fast-model-actuation/api/fma/v1alpha1"
 	variantautoscalingv1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/test/utils"
 )
@@ -55,6 +56,13 @@ var _ = BeforeSuite(func() {
 	GinkgoWriter.Printf("Gateway Service: %s:%d\n", benchCfg.GatewayServiceName, benchCfg.GatewayServicePort)
 	GinkgoWriter.Printf("EPP Service: %s\n", benchCfg.EPPServiceName)
 	GinkgoWriter.Printf("Results File: %s\n", benchCfg.BenchmarkResultsFile)
+	if benchCfg.FMAEnabled {
+		GinkgoWriter.Printf("FMA Enabled: true\n")
+		GinkgoWriter.Printf("FMA Namespace: %s\n", benchCfg.FMANamespace)
+		GinkgoWriter.Printf("FMA Model: %s\n", benchCfg.FMAModelID)
+		GinkgoWriter.Printf("FMA Iterations: %d\n", benchCfg.FMAIterations)
+		GinkgoWriter.Printf("FMA Results File: %s\n", benchCfg.FMAResultsFile)
+	}
 	GinkgoWriter.Printf("===============================\n\n")
 
 	By("Initializing Kubernetes client")
@@ -76,6 +84,8 @@ var _ = BeforeSuite(func() {
 	err = variantautoscalingv1alpha1.AddToScheme(s)
 	Expect(err).NotTo(HaveOccurred())
 	err = promoperator.AddToScheme(s)
+	Expect(err).NotTo(HaveOccurred())
+	err = fmav1alpha1.AddToScheme(s)
 	Expect(err).NotTo(HaveOccurred())
 
 	crClient, err = client.New(restConfig, client.Options{Scheme: s})

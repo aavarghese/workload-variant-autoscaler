@@ -203,6 +203,24 @@ jobs:
           INSTALL_GRAFANA: "true"
         run: make deploy-e2e-infra
 
+      - name: Clone FMA repository
+        uses: actions/checkout@v4
+        with:
+          repository: llm-d-incubation/llm-d-fast-model-actuation
+          path: fma-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and load FMA images
+        run: |
+          cd fma-repo
+          make build-test-requester-local build-test-launcher-local build-controller-local build-populator-local
+          make load-test-requester-local load-test-launcher-local load-controller-local load-populator-local
+
+      - name: Deploy FMA controllers
+        env:
+          FMA_REPO_PATH: ./fma-repo
+        run: make deploy-fma
+
       - name: Run benchmark
         env:
           ENVIRONMENT: kind-emulator
@@ -215,6 +233,7 @@ jobs:
           BENCHMARK_GRAFANA_PANEL_DIR: /tmp/benchmark-panels
           KV_SPARE_TRIGGER: "0.5"
           QUEUE_SPARE_TRIGGER: "4.5"
+          FMA_BENCHMARK_RESULTS_FILE: /tmp/fma-benchmark-results.json
         run: make test-benchmark
 
       - name: Upload benchmark results
@@ -224,6 +243,7 @@ jobs:
           name: benchmark-results
           path: |
             /tmp/benchmark-results.json
+            /tmp/fma-benchmark-results.json
             /tmp/benchmark-grafana-snapshot.txt
             /tmp/benchmark-grafana-snapshot.json
             /tmp/benchmark-panels/
@@ -263,6 +283,22 @@ jobs:
               const data = JSON.parse(fs.readFileSync('/tmp/benchmark-results.json', 'utf8'));
 
               const fmtTime = (v) => v < 0 ? 'N/A' : `${v.toFixed(1)}s`;
+              const fmtMs = (v) => v > 0 ? `${v.toFixed(0)}ms` : 'N/A';
+
+              let fmaRows = '';
+              try {
+                const fmaData = JSON.parse(fs.readFileSync('/tmp/fma-benchmark-results.json', 'utf8'));
+                fmaRows = `
+            | **FMA Actuation** | |
+            | Cold starts | ${fmaData.coldStarts} |
+            | Avg cold actuation | ${fmtMs(fmaData.avgColdActuationMs)} |
+            | Warm hits (sleeping woken) | ${fmaData.warmHits} |
+            | Avg warm actuation | ${fmtMs(fmaData.avgWarmActuationMs)} |
+            | Hit rate | ${(fmaData.hitRate * 100).toFixed(1)}% |
+            | Total iterations | ${fmaData.totalIterations} |`;
+              } catch (e) {
+                console.log(`Could not read FMA results: ${e.message}`);
+              }
 
               resultsTable = `| Metric | Value |
             |--------|-------|
@@ -272,7 +308,7 @@ jobs:
             | Avg KV cache usage | ${data.avgKVCacheUsage.toFixed(3)} |
             | Avg queue depth | ${data.avgQueueDepth.toFixed(1)} |
             | Replica oscillation (σ) | ${data.replicaOscillation.toFixed(2)} |
-            | Total duration | ${data.totalDurationSec.toFixed(0)}s |`;
+            | Total duration | ${data.totalDurationSec.toFixed(0)}s |${fmaRows}`;
             } catch (e) {
               console.log(`Could not read results: ${e.message}`);
             }

@@ -311,6 +311,44 @@ nightly-deploy-wva-guide: ## Nightly: full WVA+llm-d stack from job env (WVA_NS 
 	else \
 		LLM_D_NIGHTLY_PLATFORM=cks bash "$(CURDIR)/deploy/lib/llm_d_nightly_install.sh" "$(CURDIR)"; \
 	fi
+# FMA benchmark targets
+FMA_REPO_PATH ?=
+FMA_IMAGE_REGISTRY ?= ghcr.io/llm-d-incubation/llm-d-fast-model-actuation
+FMA_IMAGE_TAG ?= v0.5.1-alpha.6
+
+.PHONY: deploy-fma
+deploy-fma: ## Deploy FMA controllers (requires FMA_REPO_PATH)
+	@echo "Deploying FMA controllers..."
+	cd $(FMA_REPO_PATH) && \
+	FMA_NAMESPACE=$(E2E_EMULATED_LLMD_NAMESPACE) \
+	FMA_CHART_INSTANCE_NAME=fma \
+	CONTAINER_IMG_REG=$(FMA_IMAGE_REGISTRY) \
+	IMAGE_TAG=$(FMA_IMAGE_TAG) \
+	NODE_VIEW_CLUSTER_ROLE=create/please \
+	bash test/e2e/deploy_fma.sh
+
+.PHONY: test-benchmark-fma
+test-benchmark-fma: manifests generate fmt vet ## Run FMA actuation benchmark (requires FMA controllers deployed)
+	@echo "Running FMA actuation benchmark..."
+	KUBECONFIG=$(KUBECONFIG) \
+	ENVIRONMENT=$(ENVIRONMENT) \
+	WVA_NAMESPACE=$(CONTROLLER_NAMESPACE) \
+	LLMD_NAMESPACE=$(E2E_EMULATED_LLMD_NAMESPACE) \
+	MONITORING_NAMESPACE=$(E2E_MONITORING_NAMESPACE) \
+	USE_SIMULATOR=$(USE_SIMULATOR) \
+	SCALER_BACKEND=$(SCALER_BACKEND) \
+	MODEL_ID=$(MODEL_ID) \
+	go test ./test/benchmark/ -timeout 30m -v -ginkgo.v \
+		-ginkgo.label-filter="benchmark && fma"; \
+	TEST_EXIT_CODE=$$?; \
+	echo ""; \
+	echo "=========================================="; \
+	echo "FMA benchmark execution completed. Exit code: $$TEST_EXIT_CODE"; \
+	echo "=========================================="; \
+	exit $$TEST_EXIT_CODE
+
+.PHONY: test-benchmark-fma-with-setup
+test-benchmark-fma-with-setup: deploy-e2e-infra deploy-fma test-benchmark-fma ## Deploy infra + FMA + run FMA benchmark
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

@@ -86,6 +86,12 @@ DEPLOY_PROMETHEUS_ADAPTER=${DEPLOY_PROMETHEUS_ADAPTER:-true}
 # typically create their own CRs). Set DEPLOY_VA=true and DEPLOY_HPA=true for a demo stack.
 DEPLOY_VA=${DEPLOY_VA:-false}
 DEPLOY_HPA=${DEPLOY_HPA:-false}
+DEPLOY_FMA=${DEPLOY_FMA:-false}
+FMA_REPO_PATH=${FMA_REPO_PATH:-""}
+FMA_NAMESPACE=${FMA_NAMESPACE:-${LLMD_NS:-llm-d-inference-scheduler}}
+FMA_CHART_INSTANCE_NAME=${FMA_CHART_INSTANCE_NAME:-"fma"}
+FMA_IMAGE_REGISTRY=${FMA_IMAGE_REGISTRY:-"ghcr.io/llm-d-incubation/llm-d-fast-model-actuation"}
+FMA_IMAGE_TAG=${FMA_IMAGE_TAG:-"v0.5.1-alpha.6"}
 HPA_STABILIZATION_SECONDS=${HPA_STABILIZATION_SECONDS:-240}
 # HPA minReplicas: 0 enables scale-to-zero (requires HPAScaleToZero feature gate)
 # Default to 1 for safety; set to 0 for scale-to-zero testing
@@ -157,6 +163,8 @@ source "$DEPLOY_LIB_DIR/scaler_runtime.sh"
 source "$DEPLOY_LIB_DIR/infra_llmd.sh"
 # shellcheck source=lib/infra_wva.sh
 source "$DEPLOY_LIB_DIR/infra_wva.sh"
+# shellcheck source=lib/infra_fma.sh
+source "$DEPLOY_LIB_DIR/infra_fma.sh"
 # shellcheck source=lib/infra_monitoring.sh
 source "$DEPLOY_LIB_DIR/infra_monitoring.sh"
 # shellcheck source=lib/cleanup.sh

@@ -231,7 +231,8 @@ def main():
     parser.add_argument("-t", "--token", default=None, help="OpenShift login token")
     parser.add_argument("-s", "--server", default=None, help="OpenShift server URL")
     parser.add_argument("--direct-hpa", action="store_true", help="Bypass WVA config scraping for Native HPA tests")
-    
+    parser.add_argument("--fma", action="store_true", help="Collect FMA (Fast Model Actuation) metrics: launcher pods, sleeping instances, requester readiness")
+
     args = parser.parse_args()
     
     check_privileges(args.token, args.server)
@@ -325,6 +326,19 @@ def main():
         "hpa_desired": (f'kube_horizontalpodautoscaler_status_desired_replicas{{namespace="{namespace}"}}', False),
         "wva_desired": (f'wva_desired_replicas{{namespace="{namespace}"}}', False)
     }
+
+    # FMA metrics (launcher pod count, sleeping instances, requester readiness)
+    if args.fma:
+        fma_range_queries = {
+            "fma_launcher_pod_count": (f'count(kube_pod_info{{namespace="{namespace}", pod=~".*launcher.*"}}) or vector(0)', False),
+            "fma_launcher_ready_count": (f'count(kube_pod_status_ready{{namespace="{namespace}", pod=~".*launcher.*", condition="true"}}) or vector(0)', False),
+            "fma_sleeping_instance_count": (f'count(kube_pod_labels{{namespace="{namespace}", label_dual_pods_llm_d_ai_sleeping="true"}}) or vector(0)', False),
+            "fma_bound_launcher_count": (f'count(kube_pod_labels{{namespace="{namespace}", pod=~".*launcher.*", label_dual_pods_llm_d_ai_dual=~".+"}}) or vector(0)', False),
+            "fma_requester_pod_count": (f'count(kube_pod_info{{namespace="{namespace}", pod=~"bench-requester.*"}}) or vector(0)', False),
+            "fma_requester_ready": (f'count(kube_pod_status_ready{{namespace="{namespace}", pod=~"bench-requester.*", condition="true"}}) or vector(0)', False),
+        }
+        range_queries.update(fma_range_queries)
+        print("FMA metrics enabled — collecting launcher and sleeping instance metrics")
 
     print("Fetching timeline metrics range data...")
     for name, (query, uw) in range_queries.items():

@@ -217,6 +217,11 @@ def main():
         default=None,
         help="Path to an explicit WVA ConfigMap file to inject directly into the report."
     )
+    parser.add_argument(
+        "--fma",
+        action="store_true",
+        help="Include FMA (Fast Model Actuation) metrics in the report: launcher pods, sleeping instances."
+    )
     args = parser.parse_args()
     
     dump_file = os.path.join(args.results_dir, "all_metrics_dump.json")
@@ -394,6 +399,37 @@ def main():
     report_text += "Autoscaling Configuration (HPA & VA)\n"
     report_text += "="*115 + "\n"
     report_text += str(autoscaling_config).strip() + "\n"
+
+    # FMA section
+    if args.fma:
+        report_text += "\n" + "="*115 + "\n"
+        report_text += "FMA (Fast Model Actuation) Configuration\n"
+        report_text += "="*115 + "\n"
+        report_text += "FMA Mode: Enabled\n"
+        report_text += "Deployment: Model served via FMA launcher pods with sleep/wake support\n"
+        report_text += "Traffic Route: GuideLLM -> Launcher Pod IP -> vLLM instance (direct, no requester proxy)\n\n"
+
+        fma_launcher_data = all_metrics.get("range_metrics", {}).get("fma_launcher_pod_count", {})
+        fma_sleeping_data = all_metrics.get("range_metrics", {}).get("fma_sleeping_instance_count", {})
+        fma_bound_data = all_metrics.get("range_metrics", {}).get("fma_bound_launcher_count", {})
+
+        if fma_launcher_data.get("status") == "success" and fma_launcher_data.get("data", {}).get("result"):
+            values = fma_launcher_data["data"]["result"][0].get("values", [])
+            if values:
+                counts = [float(v[1]) for v in values]
+                report_text += f"Launcher Pods: min={int(min(counts))}, max={int(max(counts))}, avg={sum(counts)/len(counts):.1f}\n"
+
+        if fma_sleeping_data.get("status") == "success" and fma_sleeping_data.get("data", {}).get("result"):
+            values = fma_sleeping_data["data"]["result"][0].get("values", [])
+            if values:
+                counts = [float(v[1]) for v in values]
+                report_text += f"Sleeping Instances: min={int(min(counts))}, max={int(max(counts))}, avg={sum(counts)/len(counts):.1f}\n"
+
+        if fma_bound_data.get("status") == "success" and fma_bound_data.get("data", {}).get("result"):
+            values = fma_bound_data["data"]["result"][0].get("values", [])
+            if values:
+                counts = [float(v[1]) for v in values]
+                report_text += f"Bound Launchers: min={int(min(counts))}, max={int(max(counts))}, avg={sum(counts)/len(counts):.1f}\n"
 
     req_x, req_succ, req_fail, req_incomp = [], [], [], []
     latency_labels, ttft_mean, ttft_p99, itl_mean, itl_p99, tps_mean, conc_mean, req_lat_mean = [], [], [], [], [], [], [], []
