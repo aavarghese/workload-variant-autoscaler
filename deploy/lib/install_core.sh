@@ -136,6 +136,13 @@ main() {
         log_info "Skipping llm-d deployment (DEPLOY_LLM_D=false)"
     fi
 
+    # Deploy FMA controllers
+    if [ "$DEPLOY_FMA" = "true" ]; then
+        deploy_fma_controllers
+    else
+        log_info "Skipping FMA deployment (DEPLOY_FMA=false)"
+    fi
+
     deploy_scaler_backend
 
     # Verify deployment

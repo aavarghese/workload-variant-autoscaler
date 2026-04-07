@@ -47,6 +47,36 @@ cd run
 | `-w` | `chatbot_synthetic` | The workload profile to simulate (e.g., `chatbot_synthetic`, `symmetrical`). It will auto-detect matching profiles in `scenarios/`. |
 | `-d` | *(none)* | Enable Direct HPA mode (Bypasses WVA scaling logic). |
 | `-t` | *(none)* | Apply a custom WVA Threshold ConfigMap path (e.g., `-t ../scenarios/wva_threshold/wva-threshold-config.yaml`). |
+| `-f` | *(none)* | Enable FMA mode. Value is the path to the FMA repo (e.g., `-f /path/to/llm-d-fast-model-actuation`). |
+
+### FMA Mode (-f)
+
+To deploy the model via FMA (Fast Model Actuation) instead of the standard vLLM deployment, pass the `-f` flag with the path to your local FMA repository checkout:
+
+```bash
+./run_ci_benchmark.sh -n "my-namespace" -m "Qwen/Qwen3-0.6B" -f /path/to/llm-d-fast-model-actuation
+```
+
+This will:
+1. Deploy FMA CRDs and controllers (dual-pods-controller, launcher-populator) via `deploy_fma.sh`.
+2. Create FMA objects: InferenceServerConfig, LauncherConfig, LauncherPopulationPolicy, and a requester ReplicaSet.
+3. Wait for launcher pods to populate on GPU nodes and become Ready.
+4. Scale the requester RS to 1, wait for binding and readiness.
+5. Discover the launcher pod's vLLM endpoint by tracing: requester pod → `dual-pods.llm-d.ai/dual` label → launcher pod IP → ISC port.
+6. Point GuideLLM at the launcher's vLLM endpoint directly (requester pods do not proxy inference traffic).
+
+FMA-specific metrics (launcher pod count, sleeping instances, bound launchers) are collected by `dump_all_metrics.py --fma` and included in the PDF report.
+
+**Environment variables for FMA mode:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `FMA_IMAGE_REGISTRY` | `ghcr.io/llm-d-incubation/llm-d-fast-model-actuation` | FMA controller image registry |
+| `FMA_IMAGE_TAG` | `v0.5.1-alpha.6` | FMA controller image tag |
+| `FMA_LAUNCHER_IMAGE` | (same registry)/launcher:latest | Launcher pod image |
+| `FMA_REQUESTER_IMAGE` | (same registry)/test-requester:latest | Requester pod image |
+| `FMA_VLLM_PORT` | `8005` | vLLM port in InferenceServerConfig |
+| `FMA_MAX_SLEEPING` | `3` | Max sleeping instances per launcher |
 
 ### Direct HPA Baseline (-d)
 

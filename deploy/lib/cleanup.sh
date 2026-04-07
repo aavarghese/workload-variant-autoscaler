@@ -119,6 +119,10 @@ cleanup() {
         undeploy_prometheus_adapter
     fi
 
+    if [ "$DEPLOY_FMA" = "true" ]; then
+        undeploy_fma_controllers
+    fi
+
     if [ "$DEPLOY_LLM_D" = "true" ]; then
         undeploy_llm_d_infrastructure
     fi
@@ -149,6 +153,7 @@ cleanup() {
     echo "Removed components:"
     [ "$SCALER_BACKEND" = "keda" ] && echo "✓ KEDA"
     [ "$DEPLOY_PROMETHEUS_ADAPTER" = "true" ] && echo "✓ Prometheus Adapter"
+    [ "$DEPLOY_FMA" = "true" ] && echo "✓ FMA Controllers"
     [ "$DEPLOY_LLM_D" = "true" ] && echo "✓ llm-d Infrastructure"
     [ "$DEPLOY_WVA" = "true" ] && echo "✓ WVA Controller"
     [ "$DEPLOY_PROMETHEUS" = "true" ] && echo "✓ Prometheus Stack"

@@ -81,7 +81,7 @@ jobs:
               const platform = context.payload.inputs.platform;
               const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
               console.log(`Manual benchmark dispatch for ${platform}`);
-              
+
               core.setOutput('run_benchmark', 'true');
               core.setOutput('platform', platform);
 
@@ -190,10 +190,10 @@ jobs:
           IMAGE_TAG="bench-$(printf '%s' "$GIT_REF" | cut -c1-8)"
           FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           echo "Building image: $FULL_IMAGE"
-          
+
           make docker-build IMG="$FULL_IMAGE"
           make docker-push IMG="$FULL_IMAGE"
-          
+
           echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
   benchmark-kind:
@@ -292,6 +292,35 @@ jobs:
           INSTALL_GRAFANA: "true"
         run: make deploy-e2e-infra
 
+      - name: Install ko for FMA image builds
+        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d
+        with:
+          version: v0.15.2
+
+      - name: Clone FMA repository
+        uses: actions/checkout@v4
+        with:
+          repository: llm-d-incubation/llm-d-fast-model-actuation
+          path: fma-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy FMA (images, RBAC, gpu-map, controllers)
+        id: fma-deploy
+        env:
+          DEPLOY_FMA: "true"
+          FMA_REPO_PATH: ./fma-repo
+          FMA_NAMESPACE: llm-d-sim
+          KIND_CLUSTER_NAME: kind-wva-gpu-cluster
+        run: |
+          # Source the deploy library so deploy_fma_controllers() is available
+          source deploy/lib/common.sh
+          source deploy/lib/infra_fma.sh
+          export ENVIRONMENT=kind-emulator
+          deploy_fma_controllers
+          # Export image names for the benchmark step
+          echo "launcher=$FMA_LAUNCHER_IMAGE" >> $GITHUB_OUTPUT
+          echo "requester=$FMA_REQUESTER_IMAGE" >> $GITHUB_OUTPUT
+
       - name: Run benchmark
         env:
           ENVIRONMENT: kind-emulator
@@ -304,6 +333,9 @@ jobs:
           BENCHMARK_GRAFANA_PANEL_DIR: /tmp/benchmark-panels
           KV_SPARE_TRIGGER: "0.1"
           QUEUE_SPARE_TRIGGER: "3"
+          FMA_LAUNCHER_IMAGE: ${{ steps.fma-deploy.outputs.launcher }}
+          FMA_REQUESTER_IMAGE: ${{ steps.fma-deploy.outputs.requester }}
+          FMA_BENCHMARK_RESULTS_FILE: /tmp/fma-benchmark-results.json
         run: make test-benchmark
 
       - name: Upload benchmark results
@@ -314,6 +346,7 @@ jobs:
           path: |
             /tmp/benchmark-results.json
             /tmp/prefill-benchmark-results.json
+            /tmp/fma-benchmark-results.json
             /tmp/benchmark-grafana-snapshot.txt
             /tmp/benchmark-grafana-snapshot.json
             /tmp/benchmark-panels/
@@ -353,6 +386,22 @@ jobs:
               const data = JSON.parse(fs.readFileSync('/tmp/benchmark-results.json', 'utf8'));
 
               const fmtTime = (v) => v < 0 ? 'N/A' : `${v.toFixed(1)}s`;
+              const fmtMs = (v) => v > 0 ? `${v.toFixed(0)}ms` : 'N/A';
+
+              let fmaRows = '';
+              try {
+                const fmaData = JSON.parse(fs.readFileSync('/tmp/fma-benchmark-results.json', 'utf8'));
+                fmaRows = `
+            | **FMA Actuation** | |
+            | Cold starts | ${fmaData.coldStarts} |
+            | Avg cold actuation | ${fmtMs(fmaData.avgColdActuationMs)} |
+            | Warm hits (sleeping woken) | ${fmaData.warmHits} |
+            | Avg warm actuation | ${fmtMs(fmaData.avgWarmActuationMs)} |
+            | Hit rate | ${(fmaData.hitRate * 100).toFixed(1)}% |
+            | Total iterations | ${fmaData.totalIterations} |`;
+              } catch (e) {
+                console.log(`Could not read FMA results: ${e.message}`);
+              }
 
               resultsTable = `| Metric | Value |
             |--------|-------|
@@ -362,7 +411,7 @@ jobs:
             | Avg KV cache usage | ${data.avgKVCacheUsage.toFixed(3)} |
             | Avg queue depth | ${data.avgQueueDepth.toFixed(1)} |
             | Replica oscillation (σ) | ${data.replicaOscillation.toFixed(2)} |
-            | Total duration | ${data.totalDurationSec.toFixed(0)}s |`;
+            | Total duration | ${data.totalDurationSec.toFixed(0)}s |${fmaRows}`;
             } catch (e) {
               console.log(`Could not read results: ${e.message}`);
             }
@@ -1204,7 +1253,6 @@ jobs:
           script: |
             const prHeadSha = '${{ needs.gate.outputs.pr_head_sha }}';
             const platform = '${{ needs.gate.outputs.platform }}';
-            
             let benchResult;
             if (platform === 'openshift') {
               benchResult = '${{ needs.benchmark-openshift.result }}';
