@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"math"
 	"os"
-	"sort"
 )
 
 // BenchmarkResults holds the collected metrics from a benchmark scenario.
@@ -80,22 +79,6 @@ func mean(values []float64) float64 {
 	return sum / float64(len(values))
 }
 
-func percentile(values []float64, p float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-	sorted := make([]float64, len(values))
-	copy(sorted, values)
-	sort.Float64s(sorted)
-	idx := int(math.Ceil(p/100.0*float64(len(sorted)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return sorted[idx]
-}
 
 // writeFMAResults writes FMA benchmark results to a JSON file.
 func writeFMAResults(results *FMABenchmarkResults, path string) error {

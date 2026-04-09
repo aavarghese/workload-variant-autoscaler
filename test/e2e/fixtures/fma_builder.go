@@ -3,6 +3,8 @@ package fixtures
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -56,7 +58,7 @@ func buildISC(namespace, name, modelID string, port int32, lcName string, opts .
 		Spec: fmav1alpha1.InferenceServerConfigSpec{
 			ModelServerConfig: fmav1alpha1.ModelServerConfig{
 				Port:    port,
-				Options: fmt.Sprintf("--model %s", modelID),
+				Options: "--model " + modelID,
 				EnvVars: map[string]string{
 					"VLLM_SERVER_DEV_MODE":   "1",
 					"VLLM_LOGGING_LEVEL":     "DEBUG",
@@ -391,7 +393,7 @@ func ScaleFMAReplicaSet(ctx context.Context, k8sClient kubernetes.Interface, nam
 
 // WaitForFMALaunchers waits until at least `count` launcher pods with the given LC label are Ready.
 func WaitForFMALaunchers(ctx context.Context, k8sClient kubernetes.Interface, namespace, lcName string, count int, timeout time.Duration) error {
-	label := fmt.Sprintf("dual-pods.llm-d.ai/launcher-config-name=%s", lcName)
+	label := "dual-pods.llm-d.ai/launcher-config-name=" + lcName
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		pods, err := k8sClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: label})
@@ -555,14 +557,16 @@ func EnsureFMARBAC(ctx context.Context, k8sClient kubernetes.Interface, namespac
 // nodeName is the node where FMA pods will run.
 func EnsureFMAGPUMap(ctx context.Context, k8sClient kubernetes.Interface, namespace string, nodeName string, gpuCount int) error {
 	// Build fake GPU mapping: {"GPU-0": 0, "GPU-1": 1, ...}
-	mapping := "{"
+	var b strings.Builder
+	b.WriteString("{")
 	for i := 0; i < gpuCount; i++ {
 		if i > 0 {
-			mapping += ", "
+			b.WriteString(", ")
 		}
-		mapping += fmt.Sprintf("\"GPU-%d\": %d", i, i)
+		b.WriteString("\"GPU-" + strconv.Itoa(i) + "\": " + strconv.Itoa(i))
 	}
-	mapping += "}"
+	b.WriteString("}")
+	mapping := b.String()
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "gpu-map", Namespace: namespace},

@@ -48,21 +48,61 @@ if [ "$FMA_MODE" -eq 1 ]; then
         exit 1
     fi
 
+    # Detect cluster type (pokprod requires runtimeClassName: nvidia)
+    RUNTIME_CLASS=""
+    if command -v oc &>/dev/null; then
+        CLUSTER_DOMAIN=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+        if echo "$CLUSTER_DOMAIN" | grep -q "pokprod"; then
+            echo "Detected pokprod cluster — will set runtimeClassName: nvidia"
+            RUNTIME_CLASS="runtimeClassName: nvidia"
+        fi
+    fi
+
     FMA_ITERATIONS="${FMA_ITERATIONS:-5}"
     FMA_VLLM_PORT="${FMA_VLLM_PORT:-8005}"
     FMA_MAX_SLEEPING="${FMA_MAX_SLEEPING:-3}"
     FMA_LAUNCHER_IMAGE="${FMA_LAUNCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation/launcher:v0.5.1-alpha.6}"
-    FMA_REQUESTER_IMAGE="${FMA_REQUESTER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation/test-requester:v0.5.1-alpha.6}"
+    FMA_REQUESTER_IMAGE="${FMA_REQUESTER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation/requester:v0.5.1-alpha.6}"
     FMA_INST=$(date +%d-%H-%M-%S)
     FMA_ISC_NAME="bench-isc-${FMA_INST}"
     FMA_LC_NAME="bench-lc-${FMA_INST}"
     FMA_LPP_NAME="bench-lpp-${FMA_INST}"
     FMA_RS_NAME="bench-requester-${FMA_INST}"
 
-    # Cleanup trap
-    trap 'echo "Cleaning up FMA objects..."; kubectl delete rs "$FMA_RS_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null; kubectl delete lpp "$FMA_LPP_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null; kubectl delete isc "$FMA_ISC_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null; kubectl delete launcherconfig "$FMA_LC_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null' EXIT
+    # Cleanup trap — removes test objects and FMA controllers on exit
+    fma_cleanup() {
+        echo "Cleaning up FMA benchmark..."
+        kubectl delete rs "$FMA_RS_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+        kubectl delete lpp "$FMA_LPP_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+        kubectl delete isc "$FMA_ISC_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+        kubectl delete launcherconfig "$FMA_LC_NAME" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+        # Remove finalizers from launcher/requester pods so they can be deleted
+        for pod in $(kubectl get pods -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "launcher|bench-requester"); do
+            kubectl patch pod "$pod" -n "$NAMESPACE" --type=merge -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+        done
+        # Uninstall FMA controllers
+        helm uninstall "${FMA_CHART_INSTANCE_NAME:-fma}" -n "$NAMESPACE" --ignore-not-found --wait --timeout 60s 2>/dev/null || true
+    }
+    trap fma_cleanup EXIT
 
-    echo "▶️ Step 1: Deploy FMA controllers"
+    # Clean up any leftover FMA resources from previous runs
+    echo "▶️ Step 0: Clean up previous FMA resources"
+    kubectl delete rs -l app=fma-benchmark -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+    kubectl delete lpp --all -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+    kubectl delete isc --all -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+    kubectl delete launcherconfig --all -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+    for pod in $(kubectl get pods -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "launcher|bench-requester"); do
+        kubectl patch pod "$pod" -n "$NAMESPACE" --type=merge -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+        kubectl delete pod "$pod" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    done
+    helm uninstall "${FMA_CHART_INSTANCE_NAME:-fma}" -n "$NAMESPACE" --ignore-not-found --wait --timeout 60s 2>/dev/null || true
+    sleep 5
+
+    echo "▶️ Step 1: Deploy FMA controllers and populate GPU map"
+    # Follows the same pattern as FMA's ci-e2e-openshift.yaml:
+    # - deploy_fma.sh handles CRDs, ClusterRole, Helm install, controller readiness
+    # - GPU nodes are assumed to be labeled by the GPU Operator (nvidia.com/gpu.present=true)
+    # - gpu-map ConfigMap is needed so the launcher can map GPU UUIDs to device indices
     pushd "$FMA_REPO_PATH" > /dev/null
     FMA_NAMESPACE="$NAMESPACE" \
     FMA_CHART_INSTANCE_NAME="${FMA_CHART_INSTANCE_NAME:-fma}" \
@@ -72,22 +112,12 @@ if [ "$FMA_MODE" -eq 1 ]; then
     bash test/e2e/deploy_fma.sh
     popd > /dev/null
 
-    # Populate gpu-map ConfigMap if the script exists
+    # Populate gpu-map ConfigMap so launchers can map GPU UUIDs to device indices
     if [ -f "$FMA_REPO_PATH/scripts/ensure-nodes-mapped.sh" ]; then
         echo "▶️ Populating gpu-map ConfigMap..."
-        kubectl config set-context --current --namespace="$NAMESPACE"
-        bash "$FMA_REPO_PATH/scripts/ensure-nodes-mapped.sh"
+        kubectl config set-context --current --namespace="$NAMESPACE" 2>/dev/null || true
+        bash "$FMA_REPO_PATH/scripts/ensure-nodes-mapped.sh" || echo "⚠️ Warning: gpu-map population failed (may already exist or require node access)"
     fi
-
-    # Label GPU nodes
-    echo "▶️ Labeling GPU nodes..."
-    for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-        gpu_count=$(kubectl get node "$node" -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || true)
-        if [ -n "$gpu_count" ] && [ "$gpu_count" != "0" ]; then
-            kubectl label node "$node" nvidia.com/gpu.present=true --overwrite=true
-            echo "  Labeled $node (${gpu_count} GPUs)"
-        fi
-    done
 
     echo "▶️ Step 2: Create FMA objects"
     kubectl apply -n "$NAMESPACE" -f - <<FMAEOF
@@ -112,6 +142,7 @@ spec:
   maxSleepingInstances: ${FMA_MAX_SLEEPING}
   podTemplate:
     spec:
+      ${RUNTIME_CLASS}
       containers:
         - name: inference-server
           image: ${FMA_LAUNCHER_IMAGE}
@@ -161,6 +192,7 @@ spec:
         dual-pods.llm-d.ai/admin-port: "8081"
         dual-pods.llm-d.ai/inference-server-config: "${FMA_ISC_NAME}"
     spec:
+      ${RUNTIME_CLASS}
       containers:
         - name: inference-server
           image: ${FMA_REQUESTER_IMAGE}
@@ -378,208 +410,6 @@ mv "${SCENARIO_PATH}.tmp" "${SCENARIO_PATH}"
 echo "Reverting ${SCENARIO_PATH} to original state..."
 mv "${SCENARIO_PATH}.bak" "${SCENARIO_PATH}"
 trap - EXIT INT TERM
-
-if [ "$FMA_MODE" -eq 1 ]; then
-    echo "============================================================================="
-    echo "▶️ FMA STEP 2b: Deploy FMA Controllers and Create FMA Objects"
-    echo "============================================================================="
-
-    if [ -z "$FMA_REPO_PATH" ] || [ ! -f "$FMA_REPO_PATH/test/e2e/deploy_fma.sh" ]; then
-        echo "❌ ERROR: FMA_REPO_PATH must point to a valid FMA repo (got: $FMA_REPO_PATH)"
-        exit 1
-    fi
-
-    echo "Deploying FMA controllers from $FMA_REPO_PATH..."
-    pushd "$FMA_REPO_PATH" > /dev/null
-    FMA_NAMESPACE="$NAMESPACE" \
-    FMA_CHART_INSTANCE_NAME="${FMA_CHART_INSTANCE_NAME:-fma}" \
-    CONTAINER_IMG_REG="${FMA_IMAGE_REGISTRY:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation}" \
-    IMAGE_TAG="${FMA_IMAGE_TAG:-v0.5.1-alpha.6}" \
-    NODE_VIEW_CLUSTER_ROLE="${FMA_NODE_VIEW_CLUSTER_ROLE:-create/please}" \
-    bash test/e2e/deploy_fma.sh
-    popd > /dev/null
-
-    # Populate gpu-map ConfigMap (maps GPU UUIDs to indices on each node)
-    if [ -f "$FMA_REPO_PATH/scripts/ensure-nodes-mapped.sh" ]; then
-        echo "Populating gpu-map ConfigMap..."
-        kubectl config set-context --current --namespace="$NAMESPACE"
-        bash "$FMA_REPO_PATH/scripts/ensure-nodes-mapped.sh"
-    fi
-
-    # Ensure GPU nodes have the nvidia.com/gpu.present label required by FMA's LPP
-    echo "Labeling GPU nodes with nvidia.com/gpu.present=true..."
-    for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-        gpu_count=$(kubectl get node "$node" -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || true)
-        if [ -n "$gpu_count" ] && [ "$gpu_count" != "0" ]; then
-            kubectl label node "$node" nvidia.com/gpu.present=true --overwrite=true
-            echo "  Labeled $node (${gpu_count} GPUs)"
-        fi
-    done
-
-    FMA_INST=$(date +%d-%H-%M-%S)
-    FMA_ISC_NAME="bench-isc-${FMA_INST}"
-    FMA_LC_NAME="bench-lc-${FMA_INST}"
-    FMA_LPP_NAME="bench-lpp-${FMA_INST}"
-    FMA_RS_NAME="bench-requester-${FMA_INST}"
-    FMA_VLLM_PORT="${FMA_VLLM_PORT:-8005}"
-    FMA_LAUNCHER_IMAGE="${FMA_LAUNCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation/launcher:latest}"
-    FMA_REQUESTER_IMAGE="${FMA_REQUESTER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-fast-model-actuation/test-requester:latest}"
-    FMA_MAX_SLEEPING="${FMA_MAX_SLEEPING:-3}"
-
-    echo "Creating FMA objects: ISC=$FMA_ISC_NAME, LC=$FMA_LC_NAME, LPP=$FMA_LPP_NAME, RS=$FMA_RS_NAME"
-    kubectl apply -n "$NAMESPACE" -f - <<FMAEOF
-apiVersion: fma.llm-d.ai/v1alpha1
-kind: InferenceServerConfig
-metadata:
-  name: ${FMA_ISC_NAME}
-spec:
-  modelServerConfig:
-    port: ${FMA_VLLM_PORT}
-    options: "--model ${MODEL} --enable-sleep-mode"
-    env_vars:
-      VLLM_SERVER_DEV_MODE: "1"
-      VLLM_LOGGING_LEVEL: "DEBUG"
-  launcherConfigName: ${FMA_LC_NAME}
----
-apiVersion: fma.llm-d.ai/v1alpha1
-kind: LauncherConfig
-metadata:
-  name: ${FMA_LC_NAME}
-spec:
-  maxSleepingInstances: ${FMA_MAX_SLEEPING}
-  podTemplate:
-    spec:
-      containers:
-        - name: inference-server
-          image: ${FMA_LAUNCHER_IMAGE}
-          imagePullPolicy: Always
-          command:
-          - /app/launcher.py
-          - --host=0.0.0.0
-          - --log-level=info
-          - --port=8001
-          env:
-          - name: HF_HOME
-            value: "/tmp"
-          - name: VLLM_CACHE_ROOT
-            value: "/tmp"
----
-apiVersion: fma.llm-d.ai/v1alpha1
-kind: LauncherPopulationPolicy
-metadata:
-  name: ${FMA_LPP_NAME}
-spec:
-  enhancedNodeSelector:
-    labelSelector:
-      matchLabels:
-        nvidia.com/gpu.present: "true"
-  countForLauncher:
-    - launcherConfigName: ${FMA_LC_NAME}
-      launcherCount: 1
----
-apiVersion: apps/v1
-kind: ReplicaSet
-metadata:
-  name: ${FMA_RS_NAME}
-  labels:
-    app: fma-benchmark
-spec:
-  replicas: 0
-  selector:
-    matchLabels:
-      app: fma-benchmark
-      instance: "${FMA_INST}"
-  template:
-    metadata:
-      labels:
-        app: fma-benchmark
-        instance: "${FMA_INST}"
-      annotations:
-        dual-pods.llm-d.ai/admin-port: "8081"
-        dual-pods.llm-d.ai/inference-server-config: "${FMA_ISC_NAME}"
-    spec:
-      containers:
-        - name: inference-server
-          image: ${FMA_REQUESTER_IMAGE}
-          imagePullPolicy: Always
-          ports:
-          - name: probes
-            containerPort: 8080
-          - name: spi
-            containerPort: 8081
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8080
-            initialDelaySeconds: 2
-            periodSeconds: 5
-          resources:
-            limits:
-              nvidia.com/gpu: "1"
-              cpu: "200m"
-              memory: 250Mi
-FMAEOF
-
-    # Register FMA cleanup in trap
-    trap 'echo "Cleaning up FMA objects..."; kubectl delete rs "$FMA_RS_NAME" -n "$NAMESPACE" --ignore-not-found; kubectl delete lpp "$FMA_LPP_NAME" -n "$NAMESPACE" --ignore-not-found; kubectl delete isc "$FMA_ISC_NAME" -n "$NAMESPACE" --ignore-not-found; kubectl delete launcherconfig "$FMA_LC_NAME" -n "$NAMESPACE" --ignore-not-found' EXIT
-
-    echo "Waiting for launcher pods to be Ready..."
-    FMA_LAUNCHER_WAIT=600
-    FMA_ELAPSED=0
-    while true; do
-        READY_COUNT=$(kubectl get pods -n "$NAMESPACE" -l "dual-pods.llm-d.ai/launcher-config-name=$FMA_LC_NAME" -o json 2>/dev/null \
-            | jq '[.items[] | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))] | length')
-        if [ "${READY_COUNT:-0}" -ge 1 ]; then
-            echo "✅ Launcher pod(s) ready: $READY_COUNT"
-            break
-        fi
-        if [ "$FMA_ELAPSED" -ge "$FMA_LAUNCHER_WAIT" ]; then
-            echo "❌ ERROR: Launcher pods not ready within ${FMA_LAUNCHER_WAIT}s"
-            exit 1
-        fi
-        sleep 10
-        FMA_ELAPSED=$((FMA_ELAPSED + 10))
-    done
-
-    echo "Scaling requester RS to 1..."
-    kubectl scale rs "$FMA_RS_NAME" -n "$NAMESPACE" --replicas=1
-
-    echo "Waiting for requester pod to be Ready..."
-    FMA_REQ_WAIT=300
-    FMA_ELAPSED=0
-    while true; do
-        READY=$(kubectl get rs "$FMA_RS_NAME" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
-        if [ "${READY:-0}" -ge 1 ]; then
-            echo "✅ Requester pod ready"
-            break
-        fi
-        if [ "$FMA_ELAPSED" -ge "$FMA_REQ_WAIT" ]; then
-            echo "❌ ERROR: Requester pod not ready within ${FMA_REQ_WAIT}s"
-            exit 1
-        fi
-        sleep 5
-        FMA_ELAPSED=$((FMA_ELAPSED + 5))
-    done
-
-    echo "Discovering FMA vLLM endpoint..."
-    _fma_requester=$(kubectl get pods -n "$NAMESPACE" -l "app=fma-benchmark,instance=$FMA_INST" --no-headers -o jsonpath='{.items[0].metadata.name}')
-    _fma_launcher=$(kubectl get pods -n "$NAMESPACE" -l "dual-pods.llm-d.ai/dual=$_fma_requester" --no-headers -o jsonpath='{.items[0].metadata.name}')
-    _fma_launcher_ip=$(kubectl get pod "$_fma_launcher" -n "$NAMESPACE" -o jsonpath='{.status.podIP}')
-
-    if [ -z "$_fma_launcher_ip" ]; then
-        echo "❌ ERROR: Could not discover launcher pod IP"
-        exit 1
-    fi
-
-    FMA_VLLM_ENDPOINT="http://${_fma_launcher_ip}:${FMA_VLLM_PORT}"
-    echo "✅ FMA vLLM endpoint: $FMA_VLLM_ENDPOINT"
-    echo "   Requester: $_fma_requester → Launcher: $_fma_launcher (${_fma_launcher_ip}:${FMA_VLLM_PORT})"
-
-    # Export for GuideLLM to use as target
-    export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME="${_fma_launcher_ip}"
-    export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT="${FMA_VLLM_PORT}"
-    export LLMDBENCH_VLLM_FQDN=""
-fi
 
 if [ "$DIRECT_HPA" -eq 1 ]; then
     echo "============================================================================="
@@ -810,11 +640,6 @@ cd "$EXTRACT_DIR" || exit 1
 
 DUMP_ARGS="-r $EXP_DATA_DIR -n $NAMESPACE"
 REPORT_ARGS="-r $EXP_DATA_DIR -n $NAMESPACE -w 60m --scenario $SCENARIO_INJECT"
-
-if [ "$FMA_MODE" -eq 1 ]; then
-    DUMP_ARGS="$DUMP_ARGS --fma"
-    REPORT_ARGS="$REPORT_ARGS --fma"
-fi
 
 if [ "$DIRECT_HPA" -eq 1 ]; then
     DUMP_ARGS="$DUMP_ARGS --direct-hpa"

@@ -152,7 +152,7 @@ var _ = Describe("FMA Actuation Benchmark", Label("benchmark", "fma"), Ordered, 
 		Expect(err).NotTo(HaveOccurred(), "Launcher pods should become ready during warmup")
 
 		pods, err := k8sClient.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("dual-pods.llm-d.ai/launcher-config-name=%s", fmaRes.LauncherConfigName),
+			LabelSelector: "dual-pods.llm-d.ai/launcher-config-name=" + fmaRes.LauncherConfigName,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		GinkgoWriter.Printf("Warmup complete: %d launcher pod(s) ready\n", len(pods.Items))
