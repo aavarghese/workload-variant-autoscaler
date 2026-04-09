@@ -210,11 +210,15 @@ jobs:
           path: fma-repo
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and load FMA images
+      - name: Pull and load FMA images into Kind
+        env:
+          FMA_IMAGE_TAG: v0.5.1-alpha.6
+          FMA_REGISTRY: ghcr.io/llm-d-incubation/llm-d-fast-model-actuation
         run: |
-          cd fma-repo
-          make build-test-requester-local build-test-launcher-local build-controller-local build-populator-local
-          make load-test-requester-local load-test-launcher-local load-controller-local load-populator-local
+          for img in dual-pods-controller launcher-populator launcher requester; do
+            docker pull "${FMA_REGISTRY}/${img}:${FMA_IMAGE_TAG}"
+            kind load docker-image "${FMA_REGISTRY}/${img}:${FMA_IMAGE_TAG}" --name kind-wva-gpu-cluster
+          done
 
       - name: Deploy FMA controllers
         env:
