@@ -79,7 +79,6 @@ func mean(values []float64) float64 {
 	return sum / float64(len(values))
 }
 
-
 // writeFMAResults writes FMA benchmark results to a JSON file.
 func writeFMAResults(results *FMABenchmarkResults, path string) error {
 	results.Finalize()
