@@ -203,6 +203,17 @@ jobs:
           INSTALL_GRAFANA: "true"
         run: make deploy-e2e-infra
 
+      - name: Set up Go for FMA builds
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.24.2'
+          cache-dependency-path: ./go.sum
+
+      - name: Install ko for FMA image builds
+        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d
+        with:
+          version: v0.15.2
+
       - name: Clone FMA repository
         uses: actions/checkout@v4
         with:
@@ -210,15 +221,74 @@ jobs:
           path: fma-repo
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull and load FMA images into Kind
-        env:
-          FMA_IMAGE_TAG: v0.5.1-alpha.6
-          FMA_REGISTRY: ghcr.io/llm-d-incubation/llm-d-fast-model-actuation
+      - name: Build and load FMA images into Kind
+        id: fma-images
         run: |
-          for img in dual-pods-controller launcher-populator launcher requester; do
-            docker pull "${FMA_REGISTRY}/${img}:${FMA_IMAGE_TAG}"
-            kind load docker-image "${FMA_REGISTRY}/${img}:${FMA_IMAGE_TAG}" --name kind-wva-gpu-cluster
+          cd fma-repo
+          # Build all FMA images locally (matches run-launcher-based.sh)
+          make build-test-requester-local build-test-launcher-local build-controller-local build-populator-local
+          # Load into the WVA Kind cluster
+          make load-test-requester-local load-test-launcher-local load-controller-local load-populator-local CLUSTER_NAME=kind-wva-gpu-cluster
+          # Export image names for the benchmark step
+          echo "launcher=$(make echo-var VAR=TEST_LAUNCHER_IMG)" >> $GITHUB_OUTPUT
+          echo "requester=$(make echo-var VAR=TEST_REQUESTER_IMG)" >> $GITHUB_OUTPUT
+
+      - name: Set up FMA prerequisites in Kind cluster
+        env:
+          FMA_NAMESPACE: llm-d-sim
+        run: |
+          # Label GPU nodes (matches run-launcher-based.sh)
+          for node in $(kubectl get nodes -o name | sed 's%^node/%%'); do
+            kubectl label node $node nvidia.com/gpu.present=true nvidia.com/gpu.product=NVIDIA-L40S nvidia.com/gpu.count=2 --overwrite=true
           done
+
+          # Create gpu-map ConfigMap with fake GPU mappings (matches run-launcher-based.sh)
+          kubectl create cm gpu-map -n "$FMA_NAMESPACE" || true
+          for node in $(kubectl get nodes -o name | sed 's%^node/%%'); do
+            kubectl patch cm gpu-map -n "$FMA_NAMESPACE" --type=merge -p="{\"data\":{\"$node\":\"{\\\"GPU-0\\\": 0, \\\"GPU-1\\\": 1}\"}}"
+          done
+
+          # Create service accounts and RBAC (matches run-launcher-based.sh)
+          kubectl create sa testreq -n "$FMA_NAMESPACE" || true
+          kubectl create sa testlauncher -n "$FMA_NAMESPACE" || true
+          cd fma-repo
+          # Apply RBAC from run-launcher-based.sh patterns
+          kubectl apply -n "$FMA_NAMESPACE" -f - <<'EOF'
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: testreq
+          rules:
+          - apiGroups: ["fma.llm-d.ai"]
+            resources: ["inferenceserverconfigs", "launcherconfigs"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resourceNames: ["gpu-map", "gpu-allocs"]
+            resources: ["configmaps"]
+            verbs: ["update", "patch", "get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: ["create"]
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "list", "watch"]
+          EOF
+          kubectl create rolebinding testreq --role=testreq --serviceaccount="$FMA_NAMESPACE":testreq -n "$FMA_NAMESPACE" || true
+          kubectl apply -n "$FMA_NAMESPACE" -f - <<'EOF'
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: testlauncher
+          rules:
+          - apiGroups: [""]
+            resourceNames: ["gpu-map"]
+            resources: ["configmaps"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "patch"]
+          EOF
+          kubectl create rolebinding testlauncher --role=testlauncher --serviceaccount="$FMA_NAMESPACE":testlauncher -n "$FMA_NAMESPACE" || true
 
       - name: Deploy FMA controllers
         env:
@@ -237,6 +307,8 @@ jobs:
           BENCHMARK_GRAFANA_PANEL_DIR: /tmp/benchmark-panels
           KV_SPARE_TRIGGER: "0.5"
           QUEUE_SPARE_TRIGGER: "4.5"
+          FMA_LAUNCHER_IMAGE: ${{ steps.fma-images.outputs.launcher }}
+          FMA_REQUESTER_IMAGE: ${{ steps.fma-images.outputs.requester }}
           FMA_BENCHMARK_RESULTS_FILE: /tmp/fma-benchmark-results.json
         run: make test-benchmark
 
