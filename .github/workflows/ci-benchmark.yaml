@@ -237,18 +237,18 @@ jobs:
         env:
           FMA_NAMESPACE: llm-d-sim
         run: |
-          # Label GPU nodes (matches run-launcher-based.sh)
+          # Label GPU nodes
           for node in $(kubectl get nodes -o name | sed 's%^node/%%'); do
             kubectl label node $node nvidia.com/gpu.present=true nvidia.com/gpu.product=NVIDIA-L40S nvidia.com/gpu.count=2 --overwrite=true
           done
 
-          # Create gpu-map ConfigMap with fake GPU mappings (matches run-launcher-based.sh)
+          # Create gpu-map ConfigMap with fake GPU mappings
           kubectl create cm gpu-map -n "$FMA_NAMESPACE" || true
           for node in $(kubectl get nodes -o name | sed 's%^node/%%'); do
             kubectl patch cm gpu-map -n "$FMA_NAMESPACE" --type=merge -p="{\"data\":{\"$node\":\"{\\\"GPU-0\\\": 0, \\\"GPU-1\\\": 1}\"}}"
           done
 
-          # Create service accounts and RBAC (matches run-launcher-based.sh)
+          # Create service accounts and RBAC
           kubectl create sa testreq -n "$FMA_NAMESPACE" || true
           kubectl create sa testlauncher -n "$FMA_NAMESPACE" || true
           cd fma-repo
