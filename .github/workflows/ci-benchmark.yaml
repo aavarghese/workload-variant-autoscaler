@@ -203,12 +203,6 @@ jobs:
           INSTALL_GRAFANA: "true"
         run: make deploy-e2e-infra
 
-      - name: Set up Go for FMA builds
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.24.2'
-          cache-dependency-path: ./go.sum
-
       - name: Install ko for FMA image builds
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d
         with:
@@ -225,7 +219,7 @@ jobs:
         id: fma-images
         run: |
           cd fma-repo
-          # Build all FMA images locally (matches run-launcher-based.sh)
+          # Build all FMA images locally
           make build-test-requester-local build-test-launcher-local build-controller-local build-populator-local
           # Load into the WVA Kind cluster
           make load-test-requester-local load-test-launcher-local load-controller-local load-populator-local CLUSTER_NAME=kind-wva-gpu-cluster
