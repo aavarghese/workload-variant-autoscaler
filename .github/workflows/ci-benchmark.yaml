@@ -292,11 +292,6 @@ jobs:
           INSTALL_GRAFANA: "true"
         run: make deploy-e2e-infra
 
-      - name: Install ko for FMA image builds
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d
-        with:
-          version: v0.15.2
-
       - name: Clone FMA repository
         uses: actions/checkout@v4
         with:
@@ -312,12 +307,10 @@ jobs:
           FMA_NAMESPACE: llm-d-sim
           KIND_CLUSTER_NAME: kind-wva-gpu-cluster
         run: |
-          # Source the deploy library so deploy_fma_controllers() is available
           source deploy/lib/common.sh
           source deploy/lib/infra_fma.sh
           export ENVIRONMENT=kind-emulator
           deploy_fma_controllers
-          # Export image names for the benchmark step
           echo "launcher=$FMA_LAUNCHER_IMAGE" >> $GITHUB_OUTPUT
           echo "requester=$FMA_REQUESTER_IMAGE" >> $GITHUB_OUTPUT
 

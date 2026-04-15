@@ -25,10 +25,13 @@ deploy_fma_controllers() {
         log_info "Building FMA images locally for Kind..."
         pushd "$FMA_REPO_PATH" > /dev/null
 
-        # Check for ko (required for building requester/controller images)
+        # Install ko if not available (required for building Go images)
         if ! command -v ko &> /dev/null; then
-            log_warning "ko not found — skipping local image builds. Pre-built images must be available."
-        else
+            log_info "Installing ko..."
+            go install github.com/google/ko@latest 2>/dev/null || log_warning "Failed to install ko"
+        fi
+
+        if command -v ko &> /dev/null; then
             make build-test-requester-local build-test-launcher-local build-controller-local build-populator-local
 
             local cluster_name="${KIND_CLUSTER_NAME:-kind-wva-gpu-cluster}"
