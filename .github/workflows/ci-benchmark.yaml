@@ -299,7 +299,7 @@ jobs:
           path: fma-repo
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Deploy FMA (images, RBAC, gpu-map, controllers)
+      - name: Deploy FMA
         id: fma-deploy
         env:
           DEPLOY_FMA: "true"

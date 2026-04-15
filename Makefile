@@ -321,17 +321,6 @@ FMA_REPO_PATH ?=
 FMA_IMAGE_REGISTRY ?= ghcr.io/llm-d-incubation/llm-d-fast-model-actuation
 FMA_IMAGE_TAG ?= v0.5.1-alpha.6
 
-.PHONY: deploy-fma
-deploy-fma: ## Deploy FMA controllers (requires FMA_REPO_PATH)
-	@echo "Deploying FMA controllers..."
-	cd $(FMA_REPO_PATH) && \
-	FMA_NAMESPACE=$(E2E_EMULATED_LLMD_NAMESPACE) \
-	FMA_CHART_INSTANCE_NAME=fma \
-	CONTAINER_IMG_REG=$(FMA_IMAGE_REGISTRY) \
-	IMAGE_TAG=$(FMA_IMAGE_TAG) \
-	NODE_VIEW_CLUSTER_ROLE=create/please \
-	bash test/e2e/deploy_fma.sh
-
 .PHONY: test-benchmark-fma
 test-benchmark-fma: manifests generate fmt vet ## Run FMA actuation benchmark (requires FMA controllers deployed)
 	@echo "Running FMA actuation benchmark..."
